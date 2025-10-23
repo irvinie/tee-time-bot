@@ -1,7 +1,15 @@
+// reserve-teetime.mjs
+// Usage: node reserve-teetime.mjs
+//
+// Requires: npm i playwright dotenv && npx playwright install
+// .env must define at least LOGIN_URL, COURSE_URL, USERNAME, PASSWORD, COURSE_NAME
+// Example COURSE_NAME: "Roy Kizer Golf Course" or "Jimmy Clay Golf Course"
+
 import 'dotenv/config';
+import fs from 'fs';
 import { chromium } from 'playwright';
 
-// ---- Config helpers ----
+// ---------- Config helpers ----------
 const bool = (v, d=false)=> (v==null?d:/^(1|true|yes)$/i.test(v));
 const int  = (v, d)=> (v==null?d:parseInt(v,10));
 const parseJitter = (s, d=[1500,2500])=>{
@@ -11,16 +19,22 @@ const parseJitter = (s, d=[1500,2500])=>{
   } catch { return d; }
 };
 
+// ---------- Env/config ----------
 const cfg = {
-  courseUrl: process.env.COURSE_URL,
-  loginUrl: process.env.LOGIN_URL || process.env.COURSE_URL,
+  loginUrl: process.env.LOGIN_URL || 'https://txaustinweb.myvscloud.com/webtrac/web/login.html',
+  courseUrl: process.env.COURSE_URL || 'https://txaustinweb.myvscloud.com/webtrac/web/search.html?display=detail&module=GR&secondarycode=2',
   user: process.env.USERNAME,
   pass: process.env.PASSWORD,
+  courseName: process.env.COURSE_NAME || 'Roy Kizer Golf Course', // or "Jimmy Clay Golf Course"
+
   players: int(process.env.PLAYERS, 2),
+  holesLabel: process.env.HOLES_LABEL || '18 Holes',
+
   windowStart: process.env.WINDOW_START || '07:00',
-  windowEnd: process.env.WINDOW_END || '09:00',
+  windowEnd: process.env_WINDOW_END || process.env.WINDOW_END || '09:00',
   preferredDays: (process.env.PREFERRED_DAYS || 'Sat,Sun').split(',').map(s=>s.trim()),
   tz: process.env.TIMEZONE || 'America/Chicago',
+
   headless: bool(process.env.HEADLESS, false),
   autoConfirm: bool(process.env.AUTO_CONFIRM, false),
   searchSeconds: int(process.env.SEARCH_SECONDS, 240),
@@ -28,55 +42,17 @@ const cfg = {
 };
 
 function assertEnv() {
-  const required = ['courseUrl','user','pass'];
-  for (const k of required) {
-    if (!cfg[k]) throw new Error(`Missing required env: ${k}`);
-  }
+  const required = ['loginUrl','courseUrl','user','pass','courseName'];
+  const missing = required.filter(k => !cfg[k]);
+  if (missing.length) throw new Error(`Missing required envs: ${missing.join(', ')}`);
 }
 
+// ---------- Utils ----------
 function toMin(hhmm) { const [h,m] = hhmm.split(':').map(Number); return h*60+m; }
 function timeInRange(hhmm, start, end) {
   const t=toMin(hhmm), s=toMin(start), e=toMin(end);
   return t>=s && t<=e;
 }
-function fmt(d) { return d.toLocaleString('en-US', { timeZone: cfg.tz }); }
-function nextWeekendDates() {
-  // Return next Sat & Sun (dates at local tz) starting from today
-  const out = [];
-  const now = new Date();
-  for (let i=0;i<10;i++) {
-    const d = new Date(now); d.setDate(d.getDate()+i);
-    const dow = d.toLocaleDateString('en-US',{weekday:'short', timeZone:cfg.tz});
-    if (cfg.preferredDays.some(x => dow.toLowerCase().startsWith(x.toLowerCase()))) out.push(d);
-  }
-  return out.slice(0, 2); // keep first Sat/Sun
-}
-
-function jitteredDelay([min,max]) {
-  const ms = Math.floor(Math.random()*(max-min)+min);
-  return new Promise(r=>setTimeout(r, ms));
-}
-
-// ---- Selectors you MUST update after inspecting the site ----
-// Use your browser DevTools to verify these:
-const S = {
-  loginEmail: 'input[type="email"], #email',
-  loginPass: 'input[type="password"], #password',
-  loginSubmit: 'button:has-text("Sign in"), button[type="submit"]',
-
-  playersSelect: '#players, select[name="players"]',
-  dateInput: '#datePicker, input[name="date"]',
-  searchBtn: 'button:has-text("Search"), button[aria-label="Search"]',
-
-  teeRow: '.tee-time-row',
-  teeTimeCell: '.time',         // e.g., innerText '7:12 AM'
-  teePriceCell: '.price',
-  teeBookBtn: 'button.book, button:has-text("Book")',
-
-  confirmBtn: 'button:has-text("Confirm"), button:has-text("Pay")',
-};
-
-// Parse a visible time string like '7:12 AM' to 'HH:MM'
 function normalizeTimeLabel(label='') {
   const m = label.trim().match(/(\d{1,2}):(\d{2})\s*([AP]M)/i);
   if (!m) return '';
@@ -85,144 +61,214 @@ function normalizeTimeLabel(label='') {
   if (/am/i.test(ampm) && hh === 12) hh = 0;
   return String(hh).padStart(2,'0')+':'+mm;
 }
+function fmt(d) { return d.toLocaleString('en-US', { timeZone: cfg.tz }); }
 
+function nextWeekendDates() {
+  const out = [];
+  const now = new Date();
+  for (let i=0;i<14;i++) {
+    const d = new Date(now); d.setDate(d.getDate()+i);
+    const dow = d.toLocaleDateString('en-US',{weekday:'short', timeZone:cfg.tz});
+    if (cfg.preferredDays.some(x => dow.toLowerCase().startsWith(x.toLowerCase()))) out.push(d);
+  }
+  return out.slice(0, 2); // next Sat & Sun (first occurrence of each)
+}
+
+function jitteredDelay([min,max]) {
+  const ms = Math.floor(Math.random()*(max-min)+min);
+  return new Promise(r=>setTimeout(r, ms));
+}
+
+// Optional wait-until 5:00 PM CT alignment (you can start ~4:59 CT)
+function msUntilCT(hour=17, minute=0) {
+  const now = new Date();
+  const nowCT = new Date(now.toLocaleString('en-US', { timeZone: cfg.tz }));
+  const tgtCT = new Date(nowCT);
+  tgtCT.setHours(hour, minute, 0, 0);
+
+  // Translate CT target back to local/UTC by delta
+  const delta = tgtCT.getTime() - nowCT.getTime();
+  const tgt = new Date(now.getTime() + delta);
+  return Math.max(0, tgt - now);
+}
+
+// ---------- Selectors (accessible-first for CivicRec/WebTrac) ----------
+const S = {
+  loginUser: (page) => page.getByLabel('Username'),
+  loginPass: (page) => page.getByLabel('Password'),
+  loginSubmit: (page) => page.getByRole('button', { name: /^login$/i }),
+
+  courseSelect: (page) => page.getByLabel('Course'),
+  beginTimeSelect: (page) => page.getByLabel('Begin Time'), // optional if present
+  dateInput: (page) => page.getByRole('textbox', { name: /^date$/i }),
+  playersSelect: (page) => page.getByLabel('Number Of Players'),
+  holesSelect: (page) => page.getByLabel('Number Of Holes'),
+  searchBtn: (page) => page.getByRole('button', { name: /^search$/i }),
+
+  // Results
+  rowRole: (page) => page.getByRole('row'),
+  addToCartIn: (row) => row.getByRole('button', { name: /Add To Cart/i }),
+
+  // Potential confirm/checkout
+  confirmBtn: (page) => page.getByRole('button', { name: /Confirm|Checkout|Pay/i }),
+  continueLink: (page) => page.getByRole('link', { name: /continue|enter|home|my account/i }),
+  continueBtn: (page) => page.getByRole('button', { name: /continue|enter/i }),
+};
+
+// ---------- Core actions ----------
 async function login(page) {
   await page.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' });
-  await page.waitForTimeout(300);
-  if (await page.$(S.loginEmail)) {
-    await page.fill(S.loginEmail, cfg.user);
-    await page.fill(S.loginPass, cfg.pass);
-    await Promise.all([
-      page.waitForLoadState('networkidle'),
-      page.click(S.loginSubmit),
-    ]);
+
+  await S.loginUser(page).fill(cfg.user);
+  await S.loginPass(page).fill(cfg.pass);
+  await Promise.all([
+    page.waitForLoadState('networkidle'),
+    S.loginSubmit(page).click(),
+  ]);
+
+  // Some sites show a splash page; try to click through if visible
+  const contLink = S.continueLink(page);
+  const contBtn = S.continueBtn(page);
+  if (await contLink.isVisible().catch(()=>false)) {
+    await Promise.all([ page.waitForLoadState('networkidle'), contLink.click() ]);
+  } else if (await contBtn.isVisible().catch(()=>false)) {
+    await Promise.all([ page.waitForLoadState('networkidle'), contBtn.click() ]);
   }
+
+  // Jump straight to tee sheet
+  await page.goto(cfg.courseUrl, { waitUntil: 'domcontentloaded' });
 }
 
 async function gotoSearch(page) {
-  await page.goto(cfg.courseUrl, { waitUntil: 'domcontentloaded' });
-  if (await page.$(S.playersSelect)) {
-    await page.selectOption(S.playersSelect, String(cfg.players)).catch(()=>{});
+  if (!page.url().includes('/search.html')) {
+    await page.goto(cfg.courseUrl, { waitUntil: 'domcontentloaded' });
   }
+  // Set course & preferences
+  await S.courseSelect(page).selectOption({ label: cfg.courseName }).catch(()=>{});
+  await S.playersSelect(page).selectOption(String(cfg.players)).catch(()=>{});
+  await S.holesSelect(page).selectOption({ label: cfg.holesLabel }).catch(()=>{});
+}
+
+function mdy(dateObj) {
+  const yyyy = dateObj.toLocaleString('en-US', { timeZone: cfg.tz, year:'numeric' });
+  const mm   = dateObj.toLocaleString('en-US', { timeZone: cfg.tz, month:'2-digit' });
+  const dd   = dateObj.toLocaleString('en-US', { timeZone: cfg.tz, day:'2-digit' });
+  return `${mm}/${dd}/${yyyy}`;
 }
 
 async function setDateAndSearch(page, dateObj) {
-  const yyyy = dateObj.toLocaleString('en-CA', { timeZone: cfg.tz, year:'numeric' });
-  const mm = dateObj.toLocaleString('en-CA', { timeZone: cfg.tz, month:'2-digit' });
-  const dd = dateObj.toLocaleString('en-CA', { timeZone: cfg.tz, day:'2-digit' });
-  const iso = `${yyyy}-${mm}-${dd}`;
-
-  if (await page.$(S.dateInput)) {
-    await page.fill(S.dateInput, iso);
-  }
+  await S.dateInput(page).fill(mdy(dateObj));
   await Promise.all([
     page.waitForLoadState('networkidle'),
-    page.click(S.searchBtn)
+    S.searchBtn(page).click(),
   ]);
 }
 
 async function findCandidates(page) {
-  const rows = await page.$$(S.teeRow);
+  const rows = await S.rowRole(page).all(); // includes header row(s)
   const hits = [];
+
   for (const r of rows) {
-    const label = (await r.locator(S.teeTimeCell).first().textContent().catch(()=>'')) || '';
-    const t = normalizeTimeLabel(label);
-    const bookable = await r.locator(S.teeBookBtn).first().isVisible().catch(()=>false);
-    if (bookable && t && timeInRange(t, cfg.windowStart, cfg.windowEnd)) {
-      hits.push({ t, row: r });
+    const txt = (await r.innerText()).trim();
+    if (!txt) continue;
+
+    // Ensure row is for our chosen course
+    if (!txt.includes(cfg.courseName)) continue;
+
+    // Extract time like "7:12 am"
+    const m = txt.match(/(\d{1,2}:\d{2}\s*[ap]m)/i);
+    if (!m) continue;
+    const t24 = normalizeTimeLabel(m[1]);
+
+    if (t24 && timeInRange(t24, cfg.windowStart, cfg.windowEnd)) {
+      const addBtn = S.addToCartIn(r);
+      if (await addBtn.isVisible().catch(()=>false)) {
+        hits.push({ t: t24, row: r, addBtn });
+      }
     }
   }
   hits.sort((a,b)=> a.t.localeCompare(b.t));
   return hits;
 }
 
-// Wait until 4:59 PM CT then login; at 5:00:00 search spam with jitter
-function msUntil(targetHour=17, targetMinute=0) {
-  const now = new Date();
-  // Compute next occurrence today in CT, adjusting by local offset
-  const nowCT = new Date(now.toLocaleString('en-US', { timeZone: cfg.tz }));
-  const tgtCT = new Date(nowCT);
-  tgtCT.setHours(targetHour, targetMinute, 0, 0);
-
-  let tgt = new Date(now);
-  // Translate CT target back to local/UTC by difference
-  const delta = tgtCT.getTime() - nowCT.getTime();
-  tgt = new Date(now.getTime() + delta);
-
-  if (tgt <= now) {
-    // if past today 5pm CT, use next Monday 5pm CT; but we usually run on Monday
-    tgt.setDate(tgt.getDate() + 7);
-  }
-  return Math.max(0, tgt - now);
-}
-
+// ---------- Main ----------
 (async ()=>{
   assertEnv();
-  console.log('Starting tee bot with config:', {
-    courseUrl: cfg.courseUrl, tz: cfg.tz, window: `${cfg.windowStart}-${cfg.windowEnd}`,
-    preferredDays: cfg.preferredDays, players: cfg.players, headless: cfg.headless,
+
+  console.log('Starting tee-time bot with config:', {
+    courseName: cfg.courseName,
+    tz: cfg.tz,
+    window: `${cfg.windowStart}-${cfg.windowEnd}`,
+    preferredDays: cfg.preferredDays,
+    players: cfg.players,
+    headless: cfg.headless,
     autoConfirm: cfg.autoConfirm
   });
 
+  const AUTH_STATE_FILE = 'auth.json';
+  const contextArgs = fs.existsSync(AUTH_STATE_FILE)
+    ? { storageState: AUTH_STATE_FILE }
+    : {};
+
   const browser = await chromium.launch({ headless: cfg.headless });
-  const ctx = await browser.newContext();
+  const ctx = await browser.newContext(contextArgs);
   const page = await ctx.newPage();
 
-  // 1) Pre-login at ~4:59 PM CT (start the script a minute before 5:00)
-  // If you're running much earlier, this will just log in now and sit ready.
-  await login(page);
-  await gotoSearch(page);
-
-  // 2) Focus next Sat/Sun; we’ll toggle dates quickly after release
-  const targets = nextWeekendDates();
-  console.log('Will search dates:', targets.map(d=>d.toDateString()).join(' | '));
-
-  // 3) Hammer the search right after 5:00:00 CT
-  // If you start at 4:59:xx CT, this short sleep aligns you to the top of the hour.
-  {
-    const ms = msUntil(17,0);
-    if (ms > 0 && ms < 120000) {
-      console.log(`Waiting ~${Math.round(ms/1000)}s for 5:00 PM CT...`);
-      await new Promise(r=>setTimeout(r, ms));
-    } else {
-      console.log('It is already near/after 5:00 PM CT—searching now.');
-    }
+  // If no saved session, login and save it
+  if (!fs.existsSync(AUTH_STATE_FILE)) {
+    console.log('No saved session found — logging in…');
+    await login(page);
+    await ctx.storageState({ path: AUTH_STATE_FILE });
+    console.log('Session saved to auth.json');
+  } else {
+    console.log('Using saved session — going to tee sheet…');
+    await page.goto(cfg.courseUrl, { waitUntil: 'domcontentloaded' });
   }
 
-  const t0 = Date.now();
+  await gotoSearch(page);
+
+  // Align near 5:00 PM CT if desired; run the script ~4:59 PM CT
+  const ms = msUntilCT(17,0);
+  if (ms > 0 && ms < 120000) {
+    console.log(`Waiting ~${Math.round(ms/1000)}s for 5:00 PM CT (${fmt(new Date(Date.now()+ms))})…`);
+    await new Promise(r=>setTimeout(r, ms));
+  } else {
+    console.log('It is already near/after 5:00 PM CT — searching now.');
+  }
+
+  const targets = nextWeekendDates();
+  console.log('Target dates:', targets.map(d=>d.toDateString()).join(' | '));
+
+  const start = Date.now();
   let booked = false;
 
-  while (!booked && (Date.now() - t0) < cfg.searchSeconds*1000) {
+  while (!booked && (Date.now() - start) < cfg.searchSeconds*1000) {
     for (const d of targets) {
       await setDateAndSearch(page, d);
       const hits = await findCandidates(page);
 
       if (hits.length) {
         const best = hits[0];
-        console.log(`FOUND ${d.toDateString()} at ${best.t}. Bringing it into view...`);
+        console.log(`FOUND ${cfg.courseName} on ${d.toDateString()} at ${best.t}`);
         await best.row.scrollIntoViewIfNeeded();
 
-        // Optional pre-selections (e.g., walking/riding) — add selectors here
-
-        // Click "Book"
-        await best.row.locator(S.teeBookBtn).first().click();
+        // Click Add To Cart
+        await best.addBtn.click();
         await page.waitForLoadState('networkidle').catch(()=>{});
 
         if (cfg.autoConfirm) {
-          // Only enable if explicitly allowed by the course ToS.
-          if (await page.$(S.confirmBtn)) {
-            await page.click(S.confirmBtn);
+          const confirm = S.confirmBtn(page);
+          if (await confirm.isVisible().catch(()=>false)) {
+            await confirm.click();
             console.log('Submitted confirm (AUTO_CONFIRM=true).');
           } else {
-            console.log('Confirm button not found; manual step required.');
+            console.log('Confirm/Checkout not visible — manual finish required.');
           }
           booked = true;
           break;
         } else {
-          // Safe mode: stop here and alert user to click confirm manually.
-          console.log('\n🚨 Tee time ready on review page. MANUALLY click the final Confirm/Pay.\n');
-          process.stdout.write('\x07'); // terminal bell
-          // Keep browser open for manual completion
+          console.log('\n🚨 Added to cart. Manually complete checkout in the open browser.\n');
+          process.stdout.write('\x07');
           booked = true;
           break;
         }
@@ -230,7 +276,6 @@ function msUntil(targetHour=17, targetMinute=0) {
     }
     if (!booked) {
       await jitteredDelay(cfg.refreshJitter);
-      // Optional: hard reload to bust caches
       await page.reload({ waitUntil: 'domcontentloaded' }).catch(()=>{});
     }
   }
@@ -238,11 +283,12 @@ function msUntil(targetHour=17, targetMinute=0) {
   if (!booked) {
     console.log('No matching tee times found within search window.');
   } else {
-    console.log('Flow completed (either paused for manual confirm or auto-confirmed).');
+    console.log('Flow completed (paused for manual checkout or auto-confirmed).');
   }
-  // Do not close browser automatically; let you verify.
+
+  // Keep the browser open so you can complete checkout or review
   // await browser.close();
-})().catch(e=>{
-  console.error('Fatal error:', e);
-  process.exit(1);
+})().catch(err=>{
+  console.error('Fatal error:', err);
+  //process.exit(1);
 });
