@@ -170,6 +170,18 @@ async function gotoSearch(page) {
 }
 
 
+
+
+function parseForcedDateFromEnv() {
+  const s = process.env.TARGET_DATE; // expect MM/DD/YYYY
+  if (!s) return null;
+  const [mm, dd, yyyy] = s.split('/');
+  if (!mm || !dd || !yyyy) return null;
+  const d = new Date(`${yyyy}-${mm}-${dd}T12:00:00`);
+  return isNaN(d) ? null : d;
+}
+
+
 function mdy(dateObj) {
   const yyyy = dateObj.toLocaleString('en-US', { timeZone: cfg.tz, year:'numeric' });
   const mm   = dateObj.toLocaleString('en-US', { timeZone: cfg.tz, month:'2-digit' });
@@ -177,21 +189,88 @@ function mdy(dateObj) {
   return `${mm}/${dd}/${yyyy}`;
 }
 
-async function setDateAndSearch(page, dateObj) {
-  const dateStr = mdy(dateObj);
-  console.log(`[search] setting Date=${dateStr}…`);
-  await S.dateInput(page).click({ clickCount: 3 }); // select-all
-  await S.dateInput(page).fill(dateStr);
-  await S.dateInput(page).press('Enter').catch(()=>{}); // close any datepicker
+// Set input value via JS and dispatch input/change events so the site reacts.
+async function setInputValueAndDispatch(page, selector, value) {
+  await page.evaluate(({ selector, value }) => {
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+    return true;
+  }, { selector, value });
+  return (await page.locator(selector).inputValue()).trim() === value;
+}
 
-  // Set Begin Time to earliest (optional), e.g., "5:00 PM" for your test or "12:00 AM" for weekends
-  const begin = await S.beginTimeSelect(page);
-  if (begin) {
-    // For your current test window (5–6 PM), nudge the dropdown to "5:00 PM"
-    console.log('[search] setting Begin Time=5:00 PM…');
-    await begin.selectOption({ label: '5:00 PM' }).catch(()=>{});
+
+async function typeDateLikeHuman(inp, value) {
+  await inp.scrollIntoViewIfNeeded();
+  await inp.focus();
+  // Select-all + clear thoroughly
+  await inp.press('ControlOrMeta+a').catch(()=>{});
+  await inp.press('Backspace').catch(()=>{});
+  // Slow type so the mask/validator reacts
+  await inp.type(value, { delay: 60 });
+  // Nudge change/blur events
+  await inp.press('Enter').catch(()=>{});
+  await inp.blur().catch(()=>{});
+}
+
+async function pickDateViaCalendar(page, dateObj) {
+  // Open the datepicker button next to #begindate
+  const calendarBtn = page.locator('#begindate_vm_4_button'); // seen in your error output
+  if (!(await calendarBtn.isVisible().catch(()=>false))) return false;
+  await calendarBtn.click();
+
+  // Target month/year header & nav arrows (common CivicRec datepicker roles/labels)
+  const targetMonth = dateObj.toLocaleString('en-US', { month:'long' });
+  const targetYear  = dateObj.toLocaleString('en-US', { year:'numeric' });
+
+  // Try up to 12 steps to reach the right month/year
+  for (let i = 0; i < 12; i++) {
+    const header = page.getByRole('heading', { name: new RegExp(`${targetMonth}\\s+${targetYear}`,'i') });
+    if (await header.isVisible().catch(()=>false)) break;
+    // Click "Next" arrow
+    const next = page.getByRole('button', { name: /next|›|»/i });
+    await next.click().catch(()=>{});
+    await page.waitForTimeout(150);
   }
 
+  // Click the day number
+  const day = dateObj.toLocaleString('en-US', { day:'numeric' }); // e.g., "24"
+  const dayBtn = page.getByRole('button', { name: new RegExp(`^${day}$`) });
+  await dayBtn.click();
+  return true;
+}
+
+async function setDateAndSearch(page, dateObj) {
+  const dateStr = mdy(dateObj);
+  console.log(`[search] setting Date=${dateStr} fast…`);
+
+  // 1) Set date instantly via direct value set + events
+  const dateOk = await setInputValueAndDispatch(page, '#begindate', dateStr);
+  const cur = (await page.locator('#begindate').inputValue()).trim();
+  console.log(`[search] Date now reads: ${cur}`);
+  if (!dateOk) console.warn('[search] Warning: date didn’t stick on first try');
+
+  // --- Force Begin Time (timepicker input) ---
+try {
+  const startHHMM = (process.env.WINDOW_START || cfg.windowStart); // e.g. "17:00"
+  const [hh, mm] = startHHMM.split(':').map(Number);
+  const h12 = ((hh % 12) || 12);
+  const ampm = hh >= 12 ? 'pm' : 'am';
+  const timeLabel = `${String(h12)}:${String(mm).padStart(2,'0')} ${ampm}`; // "5:00 pm"
+  console.log(`[search] forcing Begin Time=${timeLabel}…`);
+
+  const ok = await setInputValueAndDispatch(page, '#begintime', timeLabel);
+  if (!ok) console.warn('[search] Begin Time did not stick on first try');
+} catch (e) {
+  console.warn('[search] Begin Time force failed:', e?.message);
+}
+
+
+  // 3) Search
   console.log('[search] clicking Search…');
   await Promise.all([
     page.waitForLoadState('networkidle'),
@@ -199,29 +278,99 @@ async function setDateAndSearch(page, dateObj) {
   ]);
 }
 
+  // (Optional) set Begin Time to a sane lower bound (helps paging)
+  // Find/select an option in a <select> by visible text (case/space-insensitive)
+async function selectOptionByLooseText(selectLocator, wantedLabel) {
+  const norm = s => s.toLowerCase().replace(/\s+/g, '');
+  const want = norm(wantedLabel);
+  const handle = await selectLocator.elementHandle();
+  if (!handle) return false;
+
+  const success = await selectLocator.selectOption({ label: new RegExp(`^\\s*${wantedLabel.replace(/[:/\\^$.*+?()[\]{}|-]/g,'\\$&')}\\s*$`, 'i') }).catch(()=>null);
+  if (success && success.length) return true;
+
+  // fallback: scan options manually and set by value
+  const chosen = await selectLocator.evaluate((sel, want) => {
+    const norm = s => (s || '').toLowerCase().replace(/\s+/g,'');
+    const opts = Array.from(sel.options || []);
+    const found = opts.find(o => norm(o.textContent) === want) || opts.find(o => norm(o.label) === want);
+    if (found) {
+      sel.value = found.value;
+      sel.dispatchEvent(new Event('input', { bubbles: true }));
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    }
+    return false;
+  }, want);
+  return chosen;
+}
+
+// Map "17:00" -> "5:00 PM" etc.
+function hhmmToLabel(hhmm) {
+  const [hhStr, mmStr] = hhmm.split(':');
+  const hh = parseInt(hhStr,10);
+  const h12 = ((hh % 12) || 12);
+  const ampm = hh >= 12 ? 'PM' : 'AM';
+  return `${h12}:${mmStr} ${ampm}`;
+}
+
+
 async function findCandidates(page) {
-  const rows = await S.rowRole(page).all();
-  console.log(`[results] scanning ${rows.length} rows…`);
+  const rows = await page.getByRole('row').all();
+  console.log(`[results] rows=${rows.length} (course=${cfg.courseName}) window=${cfg.windowStart}-${cfg.windowEnd}`);
+
+  // (debug) show first few rows
+  for (let i = 0; i < Math.min(rows.length, 5); i++) {
+    const t = (await rows[i].innerText()).slice(0, 140).replace(/\s+/g,' ');
+    console.log(`[results] row${i}: ${t}`);
+  }
+
   const hits = [];
   for (const r of rows) {
     const txt = (await r.innerText()).trim();
     if (!txt) continue;
     if (!txt.includes(cfg.courseName)) continue;
 
+    // extract "5:21 pm"
     const m = txt.match(/(\d{1,2}:\d{2}\s*[ap]m)/i);
     if (!m) continue;
-    const t24 = normalizeTimeLabel(m[1]);
 
-    if (t24 && timeInRange(t24, cfg.windowStart, cfg.windowEnd)) {
-      const addBtn = S.addToCartIn(r);
-      if (await addBtn.isVisible().catch(()=>false)) {
-        hits.push({ t: t24, row: r, addBtn });
-      }
+    // normalize to "HH:MM" 24h
+    const t24 = normalizeTimeLabel(m[1]);
+    if (!t24 || !timeInRange(t24, cfg.windowStart, cfg.windowEnd)) continue;
+
+    // Prefer button inside the same visual row; if not found, fall back to page-wide match filtered by row text.
+    let addBtn = r.locator('button:has-text("Add To Cart"), a:has-text("Add To Cart")');
+    if (await addBtn.count() === 0) {
+      // fallback: find a nearby Add To Cart whose ancestor contains the same time text
+      addBtn = page.locator('button:has-text("Add To Cart"), a:has-text("Add To Cart")')
+                   .filter({ hasText: '' }); // keep
+    }
+
+    // Only accept if the button exists (visible or not—some skins hide until hover)
+    if (await addBtn.count() > 0) {
+      hits.push({ t: t24, row: r, addBtn: addBtn.first(), rawText: txt });
     }
   }
-  console.log(`[results] matching hits: ${hits.map(h=>h.t).join(', ') || 'none'}`);
+
+  console.log(`[results] matching hits: ${hits.map(h => h.t).join(', ') || 'none'}`);
   hits.sort((a,b)=> a.t.localeCompare(b.t));
   return hits;
+}
+
+
+// Set input value via JS and dispatch input/change/blur so the site reacts.
+async function setInputValueAndDispatch(page, selector, value) {
+  await page.evaluate(({ selector, value }) => {
+    const el = document.querySelector(selector);
+    if (!el) return false;
+    el.value = value;
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    el.dispatchEvent(new Event('blur', { bubbles: true }));
+    return true;
+  }, { selector, value });
+  return (await page.locator(selector).inputValue()).trim().toLowerCase() === value.toLowerCase();
 }
 
 
@@ -274,8 +423,10 @@ if (fs.existsSync(AUTH_STATE_FILE)) {
     console.log('It is already near/after 5:00 PM CT — searching now.');
   }
 
-  const targets = nextWeekendDates();
-  console.log('Target dates:', targets.map(d=>d.toDateString()).join(' | '));
+const forced = parseForcedDateFromEnv();
+const targets = forced ? [forced] : nextWeekendDates();
+console.log('Target dates:', targets.map(d=>d.toDateString()).join(' | '));
+
 
   const start = Date.now();
   let booked = false;
@@ -288,7 +439,20 @@ if (fs.existsSync(AUTH_STATE_FILE)) {
       if (hits.length) {
         const best = hits[0];
         console.log(`FOUND ${cfg.courseName} on ${d.toDateString()} at ${best.t}`);
-        await best.row.scrollIntoViewIfNeeded();
+        await best.row.scrollIntoViewIfNeeded().catch(()=>{});
+for (let i = 0; i < 3; i++) {
+  try {
+    // first a trial click (helps Playwright wait for the button to be interactable)
+    await best.addBtn.click({ trial: true }).catch(()=>{});
+    await best.addBtn.click();
+    break;
+  } catch (e) {
+    console.warn(`[click] retry ${i+1} on Add To Cart:`, e?.message);
+    await page.waitForTimeout(150);
+  }
+}
+await page.waitForLoadState('networkidle').catch(()=>{});
+
 
         // Click Add To Cart
         await best.addBtn.click();
