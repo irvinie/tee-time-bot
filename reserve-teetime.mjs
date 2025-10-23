@@ -31,7 +31,7 @@ const cfg = {
   holesLabel: process.env.HOLES_LABEL || '18 Holes',
 
   windowStart: process.env.WINDOW_START || '07:00',
-  windowEnd: process.env_WINDOW_END || process.env.WINDOW_END || '09:00',
+  windowEnd: process.env.WINDOW_END || '09:00',
   preferredDays: (process.env.PREFERRED_DAYS || 'Sat,Sun').split(',').map(s=>s.trim()),
   tz: process.env.TIMEZONE || 'America/Chicago',
 
@@ -94,48 +94,68 @@ function msUntilCT(hour=17, minute=0) {
 
 // ---------- Selectors (accessible-first for CivicRec/WebTrac) ----------
 const S = {
-  loginUser: (page) => page.getByLabel('Username'),
-  loginPass: (page) => page.getByLabel('Password'),
+  // --- Auth / nav ---
+  loginLink:   (page) => page.getByRole('link', { name: /^login$/i }),
+  logoutLink:  (page) => page.getByRole('link', { name: /^logout$/i }),
+  loginUser:   (page) => page.getByLabel('Username'),
+  loginPass:   (page) => page.getByLabel('Password'),
   loginSubmit: (page) => page.getByRole('button', { name: /^login$/i }),
-
-  courseSelect: (page) => page.getByLabel('Course'),
-  beginTimeSelect: (page) => page.getByLabel('Begin Time'), // optional if present
-  dateInput: (page) => page.getByRole('textbox', { name: /^date$/i }),
-  playersSelect: (page) => page.getByLabel('Number Of Players'),
-  holesSelect: (page) => page.getByLabel('Number Of Holes'),
-  searchBtn: (page) => page.getByRole('button', { name: /^search$/i }),
-
-  // Results
-  rowRole: (page) => page.getByRole('row'),
-  addToCartIn: (row) => row.getByRole('button', { name: /Add To Cart/i }),
-
-  // Potential confirm/checkout
-  confirmBtn: (page) => page.getByRole('button', { name: /Confirm|Checkout|Pay/i }),
-  continueLink: (page) => page.getByRole('link', { name: /continue|enter|home|my account/i }),
+  continueLink:(page) => page.getByRole('link', { name: /continue|enter|home|my account/i }),
   continueBtn: (page) => page.getByRole('button', { name: /continue|enter/i }),
+
+  // --- Search form (use explicit IDs where available) ---
+  courseSelect:    (page) => page.getByLabel('Course'),
+  playersSelect:   (page) => page.getByLabel('Number Of Players'),
+  holesSelect:     (page) => page.getByLabel('Number Of Holes'),
+
+  // WebTrac has both a Date textbox and a Date button; target the textbox (id=begindate)
+  dateInput:       (page) => page.locator('#begindate'),
+
+  // Begin Time often has id=begintime; try label first, then fallback to #begintime
+  beginTimeSelect: async (page) => {
+    const byLabel = page.getByLabel('Begin Time');
+    if (await byLabel.count().then(c=>c>0).catch(()=>false)) return byLabel;
+    return page.locator('#begintime');
+  },
+
+  searchBtn:   (page) => page.getByRole('button', { name: /^search$/i }),
+
+  // --- Results ---
+  rowRole:     (page) => page.getByRole('row'),
+  addToCartIn: (row)  => row.getByRole('button', { name: /Add To Cart/i }),
+  confirmBtn:  (page) => page.getByRole('button', { name: /Confirm|Checkout|Pay/i }),
 };
 
 // ---------- Core actions ----------
+async function isLoggedIn(page) {
+  // If there's a Logout link, you're logged in
+  return await S.logoutLink(page).isVisible().catch(()=>false);
+}
+
 async function login(page) {
+  console.log('[auth] navigating to LOGIN_URL…');
   await page.goto(cfg.loginUrl, { waitUntil: 'domcontentloaded' });
 
+  console.log('[auth] filling username/password…');
   await S.loginUser(page).fill(cfg.user);
   await S.loginPass(page).fill(cfg.pass);
+
+  console.log('[auth] submitting login…');
   await Promise.all([
     page.waitForLoadState('networkidle'),
     S.loginSubmit(page).click(),
   ]);
 
-  // Some sites show a splash page; try to click through if visible
-  const contLink = S.continueLink(page);
-  const contBtn = S.continueBtn(page);
-  if (await contLink.isVisible().catch(()=>false)) {
-    await Promise.all([ page.waitForLoadState('networkidle'), contLink.click() ]);
-  } else if (await contBtn.isVisible().catch(()=>false)) {
-    await Promise.all([ page.waitForLoadState('networkidle'), contBtn.click() ]);
+  // If a splash shows, click through (best effort)
+  if (await S.continueLink(page).isVisible().catch(()=>false)) {
+    console.log('[auth] splash link found → continuing…');
+    await Promise.all([ page.waitForLoadState('networkidle'), S.continueLink(page).click() ]);
+  } else if (await S.continueBtn(page).isVisible().catch(()=>false)) {
+    console.log('[auth] splash button found → continuing…');
+    await Promise.all([ page.waitForLoadState('networkidle'), S.continueBtn(page).click() ]);
   }
 
-  // Jump straight to tee sheet
+  console.log('[auth] going to tee sheet…');
   await page.goto(cfg.courseUrl, { waitUntil: 'domcontentloaded' });
 }
 
@@ -143,11 +163,12 @@ async function gotoSearch(page) {
   if (!page.url().includes('/search.html')) {
     await page.goto(cfg.courseUrl, { waitUntil: 'domcontentloaded' });
   }
-  // Set course & preferences
+  console.log('[search] setting Course/Players/Holes…');
   await S.courseSelect(page).selectOption({ label: cfg.courseName }).catch(()=>{});
   await S.playersSelect(page).selectOption(String(cfg.players)).catch(()=>{});
   await S.holesSelect(page).selectOption({ label: cfg.holesLabel }).catch(()=>{});
 }
+
 
 function mdy(dateObj) {
   const yyyy = dateObj.toLocaleString('en-US', { timeZone: cfg.tz, year:'numeric' });
@@ -157,7 +178,21 @@ function mdy(dateObj) {
 }
 
 async function setDateAndSearch(page, dateObj) {
-  await S.dateInput(page).fill(mdy(dateObj));
+  const dateStr = mdy(dateObj);
+  console.log(`[search] setting Date=${dateStr}…`);
+  await S.dateInput(page).click({ clickCount: 3 }); // select-all
+  await S.dateInput(page).fill(dateStr);
+  await S.dateInput(page).press('Enter').catch(()=>{}); // close any datepicker
+
+  // Set Begin Time to earliest (optional), e.g., "5:00 PM" for your test or "12:00 AM" for weekends
+  const begin = await S.beginTimeSelect(page);
+  if (begin) {
+    // For your current test window (5–6 PM), nudge the dropdown to "5:00 PM"
+    console.log('[search] setting Begin Time=5:00 PM…');
+    await begin.selectOption({ label: '5:00 PM' }).catch(()=>{});
+  }
+
+  console.log('[search] clicking Search…');
   await Promise.all([
     page.waitForLoadState('networkidle'),
     S.searchBtn(page).click(),
@@ -165,17 +200,14 @@ async function setDateAndSearch(page, dateObj) {
 }
 
 async function findCandidates(page) {
-  const rows = await S.rowRole(page).all(); // includes header row(s)
+  const rows = await S.rowRole(page).all();
+  console.log(`[results] scanning ${rows.length} rows…`);
   const hits = [];
-
   for (const r of rows) {
     const txt = (await r.innerText()).trim();
     if (!txt) continue;
-
-    // Ensure row is for our chosen course
     if (!txt.includes(cfg.courseName)) continue;
 
-    // Extract time like "7:12 am"
     const m = txt.match(/(\d{1,2}:\d{2}\s*[ap]m)/i);
     if (!m) continue;
     const t24 = normalizeTimeLabel(m[1]);
@@ -187,9 +219,11 @@ async function findCandidates(page) {
       }
     }
   }
+  console.log(`[results] matching hits: ${hits.map(h=>h.t).join(', ') || 'none'}`);
   hits.sort((a,b)=> a.t.localeCompare(b.t));
   return hits;
 }
+
 
 // ---------- Main ----------
 (async ()=>{
@@ -214,16 +248,20 @@ async function findCandidates(page) {
   const ctx = await browser.newContext(contextArgs);
   const page = await ctx.newPage();
 
-  // If no saved session, login and save it
-  if (!fs.existsSync(AUTH_STATE_FILE)) {
-    console.log('No saved session found — logging in…');
+// If you previously saved auth.json, reuse it; otherwise log in fresh
+if (fs.existsSync(AUTH_STATE_FILE)) {
+  console.log('[session] using saved session → tee sheet…');
+  await page.goto(cfg.courseUrl, { waitUntil: 'domcontentloaded' });
+  if (!(await isLoggedIn(page))) {
+    console.log('[session] saved session invalid; logging in again…');
     await login(page);
     await ctx.storageState({ path: AUTH_STATE_FILE });
-    console.log('Session saved to auth.json');
-  } else {
-    console.log('Using saved session — going to tee sheet…');
-    await page.goto(cfg.courseUrl, { waitUntil: 'domcontentloaded' });
   }
+} else {
+  console.log('[session] no saved session; logging in…');
+  await login(page);
+  await ctx.storageState({ path: AUTH_STATE_FILE });
+}
 
   await gotoSearch(page);
 
