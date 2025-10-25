@@ -1,4 +1,4 @@
-# Tee-Time Bot — README
+# Tee-Time Bot
 
 Automation script to grab Austin CivicRec/WebTrac golf tee times (e.g., Roy Kizer, Jimmy Clay) using Playwright. It logs in, sets the date/time window, searches, clicks **Add To Cart**, then stops so you can manually finish on the “One Click To Finish” page.
 Implementation lives in `reserve-teetime.mjs` and is configurable via `.env`.  
