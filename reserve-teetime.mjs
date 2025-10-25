@@ -189,19 +189,6 @@ function mdy(dateObj) {
   return `${mm}/${dd}/${yyyy}`;
 }
 
-// Set input value via JS and dispatch input/change events so the site reacts.
-async function setInputValueAndDispatch(page, selector, value) {
-  await page.evaluate(({ selector, value }) => {
-    const el = document.querySelector(selector);
-    if (!el) return false;
-    el.value = value;
-    el.dispatchEvent(new Event('input', { bubbles: true }));
-    el.dispatchEvent(new Event('change', { bubbles: true }));
-    el.dispatchEvent(new Event('blur', { bubbles: true }));
-    return true;
-  }, { selector, value });
-  return (await page.locator(selector).inputValue()).trim() === value;
-}
 
 
 async function typeDateLikeHuman(inp, value) {
@@ -453,10 +440,6 @@ for (let i = 0; i < 3; i++) {
 }
 await page.waitForLoadState('networkidle').catch(()=>{});
 
-
-        // Click Add To Cart
-        await best.addBtn.click();
-        await page.waitForLoadState('networkidle').catch(()=>{});
 
         if (cfg.autoConfirm) {
           const confirm = S.confirmBtn(page);
