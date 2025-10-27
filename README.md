@@ -1,7 +1,9 @@
-# Tee-Time Bot
+# Tee-Time Bot v1.2
 
-Automation script to grab Austin CivicRec/WebTrac golf tee times (e.g., Roy Kizer, Jimmy Clay) using Playwright. It logs in, sets the date/time window, searches, clicks **Add To Cart**, then stops so you can manually finish on the “One Click To Finish” page.
-Implementation lives in `reserve-teetime.mjs` and is configurable via `.env`.  
+A **Node.js + Playwright** automation script to grab Austin CivicRec/WebTrac golf tee times (e.g., Roy Kizer, Jimmy Clay).
+It logs in, sets the date/time window, searches, clicks **Add To Cart**, then stops so you can manually finish on the “One Click To Finish” page.
+
+It securely stores credentials in `.env`, saves browser sessions to `auth.json`, and runs with fully configurable day/time windows.
 
 ---
 
@@ -17,162 +19,213 @@ Install deps:
 ```bash
 npm install
 npm install playwright dotenv
-npx playwright install
+npx playwright install chromium
 # If needed for WSL/Ubuntu GUI deps:
 # npx playwright install-deps
 ```
 
 ---
 
-## Project files
+## Project Files
 
-* `reserve-teetime.mjs` — main script (ESM). Minimal flow: **login → set date/time → search → Add To Cart → beep & stop**. 
-* `.env` — credentials + defaults (see below). 
-* `auth.json` — saved session (auto-created after successful login). 
+* `reserve-teetime.mjs` — main script (ESM). Minimal flow: **login → set date/time → search → Add To Cart → beep & stop**.
+* `.env` — credentials + defaults (see below).
+* `auth.json` — saved session (auto-created after login).
+
+---
+
+## Project Structure
+
+```
+tee-time-bot/
+│
+├── reserve-teetime.mjs     # Main Playwright automation script
+├── .env                    # Environment variables (your credentials & config)
+├── auth.json               # Saved cookies/session (auto-created)
+├── .gitignore              # Excludes node_modules/, .env, and auth.json
+└── package.json
+```
 
 ---
 
 ## Configure via `.env`
 
 ```ini
+# --- Login & URLs ---
 LOGIN_URL=https://txaustinweb.myvscloud.com/webtrac/web/login.html
 COURSE_URL=https://txaustinweb.myvscloud.com/webtrac/web/search.html?display=detail&module=GR&secondarycode=2
 USERNAME=yourUsername
 PASSWORD=yourPassword
+
+# --- Course preferences ---
 COURSE_NAME=Roy Kizer Golf Course   # or "Jimmy Clay Golf Course"
 PLAYERS=2
-WINDOW_START=07:00                  # "HH:MM" 24h
-WINDOW_END=09:00
-PREFERRED_DAYS=Sat,Sun              # For auto target (next Sat/Sun)
+HOLES_LABEL=18 Holes
+
+# --- Search window ---
+WINDOW_START=07:30
+WINDOW_END=10:00
+PREFERRED_DAYS=Sat
 TIMEZONE=America/Chicago
-HEADLESS=false                      # true = headless
-AUTO_CONFIRM=false                  # kept for future use; script stops before finishing
-SEARCH_SECONDS=240                  # search loop budget
-REFRESH_JITTER_MS=1700,2600         # random reload delay (ms,min,max)
+
+# --- Behavior ---
+HEADLESS=false
+AUTO_CONFIRM=false
+SEARCH_SECONDS=240
+REFRESH_JITTER_MS=1700,2600
 ```
-
-
 
 > **Tip:** Keep `HEADLESS=false` while debugging so you can see the browser.
 
 ---
 
-## Quick start
+## Quick Start
 
 From the repo root:
 
 ```bash
-# Typical dev test: force a specific date + afternoon window (4–7 PM)
+# Example dev test: force a specific date + afternoon window (4–7 PM)
 TARGET_DATE=10/26/2025 WINDOW_START=16:00 WINDOW_END=19:00 HEADLESS=false node reserve-teetime.mjs
 ```
 
-* The script logs the target date, sets **Begin Time** to match `WINDOW_START`, searches, then selects the first matching tee time for `COURSE_NAME`. 
-* After “Add To Cart,” it **beeps** and **stops** so you can click “One Click To Finish” manually. 
+* The script logs the target date, sets **Begin Time** to match `WINDOW_START`, searches, then selects the first available tee time.
+* After “Add To Cart,” it **beeps** and **stops** so you can manually click “One Click To Finish.”
 
 ---
 
-## How to change day & time
+## How to Change Day & Time
 
 You can **override per-run** (recommended) or edit `.env`.
 
-### Option A — Override per run (recommended)
+### Option A — Override per run
 
-* **Target a specific date** (MM/DD/YYYY):
+**Target a specific date:**
 
-  ```bash
-  TARGET_DATE=11/02/2025 node reserve-teetime.mjs
-  ```
+```bash
+TARGET_DATE=11/02/2025 node reserve-teetime.mjs
+```
 
-  The script uses `TARGET_DATE` if set; otherwise it auto-picks the **next weekend days** based on `PREFERRED_DAYS`. 
+**Change the time window:**
 
-* **Change the time window** (24h format):
+```bash
+WINDOW_START=16:00 WINDOW_END=19:00 node reserve-teetime.mjs
+```
 
-  ```bash
-  WINDOW_START=16:00 WINDOW_END=19:00 node reserve-teetime.mjs
-  ```
+**Run headless:**
 
-* **Run in headless mode** (CI or no GUI):
-
-  ```bash
-  HEADLESS=true node reserve-teetime.mjs
-  ```
+```bash
+HEADLESS=true node reserve-teetime.mjs
+```
 
 ### Option B — Edit `.env`
 
-Adjust `WINDOW_START`, `WINDOW_END`, `PREFERRED_DAYS`, then run:
+Change `WINDOW_START`, `WINDOW_END`, or `PREFERRED_DAYS`, then just:
 
 ```bash
 node reserve-teetime.mjs
 ```
 
----
-
-## What the script actually does (flow)
-
-1. **Session check / login** → Navigate to login, fill credentials, bypass “continue” splash, go to tee sheet. Session saved to `auth.json` for reuse. 
-2. **Form setup** → Select Course, Players, Holes. 
-3. **Date & time** → Sets `#begindate` directly (with input/change/blur events) and forces `#begintime` from `WINDOW_START` (“HH:MM” → “h:mm am/pm”). 
-4. **Search & parse** → Clicks Search, waits, reads result rows, matches rows for `COURSE_NAME`, pulls times like “5:21 pm,” converts to 24h, filters by window. 
-5. **Reserve** → Scrolls to the row, attempts **Add To Cart** (trial click + real click, with retries), then **beeps** and stops for manual finish. 
+The script automatically finds the **next occurrence** of your preferred day (e.g., next Thursday or Saturday).
 
 ---
 
-## Advanced options
+## Script Flow
 
-* **Release-time alignment**
-  If you launch just before 5:00 PM CT, the script will optionally pause to sync and start right at release:
-  it computes milliseconds until `17:00` in your timezone (`TIMEZONE`) and waits if the window is short. 
+1. **Session Handling (Fast Login)**
 
-* **Search loop budget**
-  `SEARCH_SECONDS` caps how long it keeps refreshing and searching before quitting. 
+   * Loads `auth.json` if present.
+   * If session is valid → **skips login instantly**.
+   * If expired → logs in, saves fresh cookies.
+2. **Form Setup**
 
-* **Randomized refresh**
-  `REFRESH_JITTER_MS` adds a small random delay to reloads to look less bot-like. 
+   * Selects course, players, and holes.
+3. **Date & Time**
+
+   * Sets `#begindate` and `#begintime` directly (no typing).
+4. **Search & Match**
+
+   * Clicks Search, parses rows, filters by course name + time window.
+5. **Race-Safe Add To Cart**
+
+   * Scrolls, retries click up to 3 times, verifies success via URL/cart check.
+   * If someone else snipes the slot, it refreshes and retries automatically.
+6. **Finish**
+
+   * Beeps and stops at the “One Click To Finish” screen (manual checkout).
+
+---
+
+## Advanced Options
+
+* **Release-time alignment:**
+  Waits until **5:00 PM CT** before searching if run early.
+* **Search timeout:**
+  Controlled by `SEARCH_SECONDS`.
+* **Human-like jitter:**
+  Random reload delay based on `REFRESH_JITTER_MS`.
 
 ---
 
 ## Troubleshooting
 
-* **“Missing required envs: …”** → Fill `USERNAME`, `PASSWORD`, `COURSE_NAME` in `.env`. 
-* **Browser won’t open on WSL** → Ensure browsers are installed:
-
-  ```bash
-  npx playwright install
-  # If GUI libs missing:
-  # npx playwright install-deps
-  ```
-* **No matches found** → Verify:
-
-  * `COURSE_NAME` exactly matches the site’s label.
-  * `WINDOW_START/END` cover a time actually offered that day.
-  * `TARGET_DATE` is a valid MM/DD/YYYY date for the chosen course.
+| Issue                        | Fix                                                            |
+| ---------------------------- | -------------------------------------------------------------- |
+| `Missing required envs: ...` | Fill `USERNAME`, `PASSWORD`, `COURSE_NAME` in `.env`           |
+| Browser won’t open on WSL    | Run `npx playwright install` and `npx playwright install-deps` |
+| No matching times            | Check course name, target date, and window                     |
+| Re-login every run           | CivicRec expires sessions by design (2–3s delay)               |
 
 ---
 
-## Safety & etiquette
+## Safety & Etiquette
 
-* Use for personal automation only; don’t hammer the servers.
-* Keep `SEARCH_SECONDS` modest and `REFRESH_JITTER_MS` enabled. 
-* Finish manually on the Member Selection page (the script intentionally stops there).
-
----
-
-## File map
-
-* `reserve-teetime.mjs` — main script (drop-in). 
-* `.env` — configuration template/values. 
+* Designed for **personal automation only** (do not spam or overrun CivicRec servers).
+* The script **never completes payment** — you finish manually.
+* Runs light, ethical, and indistinguishable from a fast human click.
 
 ---
 
-## Example commands
+## Example Commands
 
 ```bash
-# Dev test with visible browser, fixed date & afternoon window
+# Dev test (visible browser, fixed date)
 TARGET_DATE=10/26/2025 WINDOW_START=16:00 WINDOW_END=19:00 HEADLESS=false node reserve-teetime.mjs
 
-# Morning window via overrides
-TARGET_DATE=11/02/2025 WINDOW_START=07:00 WINDOW_END=09:00 node reserve-teetime.mjs
+# Production (Saturday morning 7:30–10 AM)
+WINDOW_START=07:30 WINDOW_END=10:00 PREFERRED_DAYS=Sat node reserve-teetime.mjs
 
 # Use .env defaults, headless
 HEADLESS=true node reserve-teetime.mjs
 ```
+
+---
+
+## Version
+
+**v1.2 – Final Build**
+Stable · Race-safe · Session-aware · CivicRec-optimized
+
+---
+
+## 🧾 Changelog
+
+### v1.2 (Current)
+
+* Added **race-check logic** to verify Add-to-Cart success and retry if another user wins the slot.
+* Implemented **session persistence** with cookie validation (`auth.json`).
+* Added **smart session skip** — only re-logs in if session truly expired.
+* Cleaned up redundant helpers, extra selectors, and unnecessary waits.
+* Finalized `.env` variable list and clarified time/day configuration.
+
+### v1.1
+
+* Improved DOM targeting for date/time fields.
+* Added `AUTO_CONFIRM` toggle (manual vs. automatic checkout).
+* Introduced `TARGET_DATE` override for testing specific days.
+* Updated Playwright event dispatch for reliability.
+
+### v1.0
+
+* Initial stable release: core automation (login → date/time → search → Add to Cart → stop).
+
+---
