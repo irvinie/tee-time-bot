@@ -345,18 +345,48 @@ async function findCandidates(page) {
 			console.log(
 				`FOUND ${cfg.courseName} on ${d.toDateString()} at ${best.t}`
 			);
+			// Scroll-into-view + robust click with retries + race verification
 			await best.row.scrollIntoViewIfNeeded().catch(() => {});
+			let added = false;
+
 			for (let i = 0; i < 3; i++) {
 				try {
 					await best.addBtn.click({ trial: true }).catch(() => {});
 					await best.addBtn.click();
-					break;
+
+					// ✅ Immediately check if we were actually redirected to the addtocart page
+					await page
+						.waitForLoadState("networkidle", { timeout: 3000 })
+						.catch(() => {});
+					const currentUrl = page.url();
+					const onCartPage = currentUrl.includes("addtocart.html");
+
+					// ✅ Alternative check: see if a cart badge exists somewhere
+					const cartIndicator = page.locator(
+						'a:has-text("Cart"), span:has-text("Cart")'
+					);
+
+					if (onCartPage || (await cartIndicator.count())) {
+						added = true;
+						console.log("[race-check] Reservation seems to have succeeded.");
+						break; // stop retry loop
+					} else {
+						console.warn(
+							"[race-check] Add To Cart may have failed (someone else got it). Retrying..."
+						);
+					}
 				} catch (e) {
 					console.warn(`[click] retry ${i + 1} on Add To Cart:`, e?.message);
-					await page.waitForTimeout(150);
+					await page.waitForTimeout(200);
 				}
 			}
-			await page.waitForLoadState("networkidle").catch(() => {});
+
+			if (!added) {
+				console.warn(
+					"[race-check] All attempts failed to secure slot — refreshing search..."
+				);
+				continue; // goes back to the outer search loop
+			}
 
 			console.log(
 				'\n🚨 Added to cart. Finish manually (Click "One Click To Finish").\n'
