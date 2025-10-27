@@ -289,18 +289,48 @@ async function findCandidates(page) {
 		headless: cfg.headless,
 	});
 
+	// ---------- Browser + session context setup ----------
+	let contextArgs = {};
 	const AUTH_STATE_FILE = "auth.json";
+
+	if (fs.existsSync(AUTH_STATE_FILE)) {
+		try {
+			const savedState = JSON.parse(fs.readFileSync(AUTH_STATE_FILE, "utf8"));
+			if (savedState?.cookies?.length > 0) {
+				contextArgs = { storageState: AUTH_STATE_FILE };
+				console.log("[session] found valid cookies in auth.json");
+			} else {
+				console.warn("[session] auth.json empty — ignoring.");
+			}
+		} catch {
+			console.warn("[session] could not parse auth.json — ignoring.");
+		}
+	}
+
 	const browser = await chromium.launch({ headless: cfg.headless });
-	const ctx = await browser.newContext(
-		fs.existsSync(AUTH_STATE_FILE) ? { storageState: AUTH_STATE_FILE } : {}
-	);
+	const ctx = await browser.newContext(contextArgs);
 	const page = await ctx.newPage();
 
+	// ---------- Session handling (fast skip if already logged in) ----------
 	if (fs.existsSync(AUTH_STATE_FILE)) {
 		console.log("[session] using saved session → tee sheet…");
 		await page.goto(cfg.courseUrl, { waitUntil: "domcontentloaded" });
-		if (!(await isLoggedIn(page))) {
-			console.log("[session] saved session invalid; logging in again…");
+
+		try {
+			const loggedIn = await isLoggedIn(page);
+			if (loggedIn) {
+				console.log("[session] valid session detected — skipping login.");
+			} else {
+				console.log("[session] saved session invalid; re-logging in…");
+				await login(page);
+				await ctx.storageState({ path: AUTH_STATE_FILE });
+				console.log("[session] cookies saved — next run should skip login.");
+			}
+		} catch (err) {
+			console.warn(
+				"[session] login check failed, re-logging in just in case:",
+				err.message
+			);
 			await login(page);
 			await ctx.storageState({ path: AUTH_STATE_FILE });
 		}
@@ -308,6 +338,7 @@ async function findCandidates(page) {
 		console.log("[session] no saved session; logging in…");
 		await login(page);
 		await ctx.storageState({ path: AUTH_STATE_FILE });
+		console.log("[session] new auth.json saved.");
 	}
 
 	await gotoSearch(page);
