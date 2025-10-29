@@ -9,10 +9,10 @@ It securely stores credentials in `.env`, saves browser sessions to `auth.json`,
 
 ## Requirements
 
-* Node.js (18+ recommended)
-* NPM
-* Playwright + browsers
-* Ubuntu/WSL users may need system deps for a visible browser window
+- Node.js (18+ recommended)
+- NPM
+- Playwright + browsers
+- Ubuntu/WSL users may need system deps for a visible browser window
 
 Install deps:
 
@@ -28,9 +28,9 @@ npx playwright install chromium
 
 ## Project Files
 
-* `reserve-teetime.mjs` — main script (ESM). Minimal flow: **login → set date/time → search → Add To Cart → beep & stop**.
-* `.env` — credentials + defaults (see below).
-* `auth.json` — saved session (auto-created after login).
+- `reserve-teetime.mjs` — main script (ESM). Minimal flow: **login → set date/time → search → Add To Cart → beep & stop**.
+- `.env` — credentials + defaults (see below).
+- `auth.json` — saved session (auto-created after login).
 
 ---
 
@@ -88,8 +88,8 @@ From the repo root:
 TARGET_DATE=10/26/2025 WINDOW_START=16:00 WINDOW_END=19:00 HEADLESS=false node reserve-teetime.mjs
 ```
 
-* The script logs the target date, sets **Begin Time** to match `WINDOW_START`, searches, then selects the first available tee time.
-* After “Add To Cart,” it **beeps** and **stops** so you can manually click “One Click To Finish.”
+- The script logs the target date, sets **Begin Time** to match `WINDOW_START`, searches, then selects the first available tee time.
+- After “Add To Cart,” it **beeps** and **stops** so you can manually click “One Click To Finish.”
 
 ---
 
@@ -133,35 +133,40 @@ The script automatically finds the **next occurrence** of your preferred day (e.
 
 1. **Session Handling (Fast Login)**
 
-   * Loads `auth.json` if present.
-   * If session is valid → **skips login instantly**.
-   * If expired → logs in, saves fresh cookies.
+   - Loads `auth.json` if present.
+   - If session is valid → **skips login instantly**.
+   - If expired → logs in, saves fresh cookies.
+
 2. **Form Setup**
 
-   * Selects course, players, and holes.
+   - Selects course, players, and holes.
+
 3. **Date & Time**
 
-   * Sets `#begindate` and `#begintime` directly (no typing).
+   - Sets `#begindate` and `#begintime` directly (no typing).
+
 4. **Search & Match**
 
-   * Clicks Search, parses rows, filters by course name + time window.
+   - Clicks Search, parses rows, filters by course name + time window.
+
 5. **Race-Safe Add To Cart**
 
-   * Scrolls, retries click up to 3 times, verifies success via URL/cart check.
-   * If someone else snipes the slot, it refreshes and retries automatically.
+   - Scrolls, retries click up to 3 times, verifies success via URL/cart check.
+   - If someone else snipes the slot, it refreshes and retries automatically.
+
 6. **Finish**
 
-   * Beeps and stops at the “One Click To Finish” screen (manual checkout).
+   - Beeps and stops at the “One Click To Finish” screen (manual checkout).
 
 ---
 
 ## Advanced Options
 
-* **Release-time alignment:**
+- **Release-time alignment:**
   Waits until **5:00 PM CT** before searching if run early.
-* **Search timeout:**
+- **Search timeout:**
   Controlled by `SEARCH_SECONDS`.
-* **Human-like jitter:**
+- **Human-like jitter:**
   Random reload delay based on `REFRESH_JITTER_MS`.
 
 ---
@@ -179,9 +184,9 @@ The script automatically finds the **next occurrence** of your preferred day (e.
 
 ## Safety & Etiquette
 
-* Designed for **personal automation only** (do not spam or overrun CivicRec servers).
-* The script **never completes payment** — you finish manually.
-* Runs light, ethical, and indistinguishable from a fast human click.
+- Designed for **personal automation only** (do not spam or overrun CivicRec servers).
+- The script **never completes payment** — you finish manually.
+- Runs light, ethical, and indistinguishable from a fast human click.
 
 ---
 
@@ -211,21 +216,21 @@ Stable · Race-safe · Session-aware · CivicRec-optimized
 
 ### v1.2 (Current)
 
-* Added **race-check logic** to verify Add-to-Cart success and retry if another user wins the slot.
-* Implemented **session persistence** with cookie validation (`auth.json`).
-* Added **smart session skip** — only re-logs in if session truly expired.
-* Cleaned up redundant helpers, extra selectors, and unnecessary waits.
-* Finalized `.env` variable list and clarified time/day configuration.
+- Added **race-check logic** to verify Add-to-Cart success and retry if another user wins the slot.
+- Implemented **session persistence** with cookie validation (`auth.json`).
+- Added **smart session skip** — only re-logs in if session truly expired.
+- Cleaned up redundant helpers, extra selectors, and unnecessary waits.
+- Finalized `.env` variable list and clarified time/day configuration.
 
 ### v1.1
 
-* Improved DOM targeting for date/time fields.
-* Added `AUTO_CONFIRM` toggle (manual vs. automatic checkout).
-* Introduced `TARGET_DATE` override for testing specific days.
-* Updated Playwright event dispatch for reliability.
+- Improved DOM targeting for date/time fields.
+- Added `AUTO_CONFIRM` toggle (manual vs. automatic checkout).
+- Introduced `TARGET_DATE` override for testing specific days.
+- Updated Playwright event dispatch for reliability.
 
 ### v1.0
 
-* Initial stable release: core automation (login → date/time → search → Add to Cart → stop).
+- Initial stable release: core automation (login → date/time → search → Add to Cart → stop).
 
 ---
